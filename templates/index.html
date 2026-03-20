@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>ForensicImager — Drive Acquisition Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Barlow:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <!-- Socket.IO client -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:         #0a0c0f;
+      --surface:    #0f1318;
+      --surface2:   #151b22;
+      --border:     #1e2a36;
+      --border-hi:  #2a3f52;
+      --accent:     #00e5ff;
+      --accent-dim: #00a8bf;
+      --accent-glow:rgba(0,229,255,0.12);
+      --warn:       #ffb300;
+      --ok:         #00e676;
+      --danger:     #ff3d57;
+      --text:       #c8d8e8;
+      --text-dim:   #5a7080;
+      --text-bright:#eaf4ff;
+      --mono:       'Share Tech Mono', monospace;
+      --sans:       'Barlow', sans-serif;
+    }
+    html,body { height:100%; background:var(--bg); color:var(--text); font-family:var(--sans); font-size:14px; line-height:1.6; }
+    body::before {
+      content:''; position:fixed; inset:0; pointer-events:none; z-index:9999;
+      background:repeating-linear-gradient(to bottom,transparent 0px,transparent 3px,rgba(0,0,0,0.07) 3px,rgba(0,0,0,0.07) 4px);
+    }
+    .shell { display:grid; grid-template-rows:auto 1fr auto; min-height:100vh; }
+
+    /* Header */
+    header {
+      border-bottom:1px solid var(--border); padding:0 32px;
+      display:flex; align-items:center; justify-content:space-between;
+      background:var(--surface); height:56px; gap:24px;
+    }
+    .logo { display:flex; align-items:center; gap:12px; }
+    .logo-text { font-family:var(--mono); font-size:15px; color:var(--accent); letter-spacing:.12em; }
+    .logo-sub  { font-size:11px; color:var(--text-dim); font-family:var(--mono); letter-spacing:.08em; }
+    .header-right { display:flex; align-items:center; gap:16px; }
+    .status-pill {
+      display:flex; align-items:center; gap:7px; padding:4px 12px;
+      border:1px solid var(--border); border-radius:2px;
+      font-family:var(--mono); font-size:11px; color:var(--text-dim); letter-spacing:.06em;
+    }
+    .dot { width:7px; height:7px; border-radius:50%; background:var(--text-dim); transition:background .3s; }
+    .dot.ok      { background:var(--ok);    box-shadow:0 0 6px var(--ok); }
+    .dot.err     { background:var(--danger);box-shadow:0 0 6px var(--danger); }
+    .dot.loading { background:var(--warn);  animation:pulse 1s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1}50%{opacity:.3} }
+
+    /* Layout */
+    main { display:grid; grid-template-columns:280px 1fr; overflow:hidden; }
+
+    /* Sidebar */
+    .sidebar { border-right:1px solid var(--border); background:var(--surface); display:flex; flex-direction:column; overflow-y:auto; }
+    .sidebar-header {
+      padding:16px 20px 12px; border-bottom:1px solid var(--border);
+      display:flex; align-items:center; justify-content:space-between;
+    }
+    .sidebar-title { font-family:var(--mono); font-size:10px; letter-spacing:.15em; color:var(--text-dim); text-transform:uppercase; }
+    .btn-refresh {
+      display:flex; align-items:center; gap:6px; background:transparent;
+      border:1px solid var(--border); color:var(--accent);
+      font-family:var(--mono); font-size:10px; letter-spacing:.08em;
+      padding:5px 10px; cursor:pointer; border-radius:2px; transition:all .15s;
+    }
+    .btn-refresh:hover { border-color:var(--accent); background:var(--accent-glow); }
+    .btn-refresh.spinning svg { animation:spin .8s linear infinite; }
+    @keyframes spin { to{transform:rotate(360deg)} }
+
+    .drive-list { flex:1; padding:8px 0; }
+    .drive-item {
+      padding:12px 20px; cursor:pointer;
+      border-left:3px solid transparent; transition:all .15s;
+    }
+    .drive-item:hover { background:var(--surface2); }
+    .drive-item.active { border-left-color:var(--accent); background:var(--accent-glow); }
+    .drive-item-top { display:flex; align-items:center; justify-content:space-between; margin-bottom:4px; }
+    .drive-device { font-family:var(--mono); font-size:12px; color:var(--accent); }
+    .drive-size-badge {
+      font-family:var(--mono); font-size:10px;
+      background:var(--surface2); border:1px solid var(--border);
+      padding:2px 6px; border-radius:2px; color:var(--text-dim);
+    }
+    .drive-model { font-size:12px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:220px; }
+    .drive-interface { font-family:var(--mono); font-size:10px; color:var(--text-dim); margin-top:2px; }
+    .state-msg { padding:32px 20px; text-align:center; font-family:var(--mono); font-size:11px; color:var(--text-dim); line-height:1.8; }
+
+    /* Detail panel */
+    .detail-panel { overflow-y:auto; background:var(--bg); padding:28px 32px; display:flex; flex-direction:column; gap:24px; }
+    .detail-empty {
+      display:flex; align-items:center; justify-content:center; height:100%;
+      flex-direction:column; gap:12px; color:var(--text-dim); font-family:var(--mono); font-size:12px; text-align:center;
+    }
+    .detail-empty svg { opacity:.15; }
+    .section-label {
+      font-family:var(--mono); font-size:10px; letter-spacing:.15em;
+      color:var(--text-dim); text-transform:uppercase; margin-bottom:12px;
+      display:flex; align-items:center; gap:10px;
+    }
+    .section-label::after { content:''; flex:1; height:1px; background:var(--border); }
+
+    /* Info grid */
+    .info-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:10px; }
+    .info-cell { background:var(--surface); border:1px solid var(--border); border-radius:2px; padding:12px 16px; transition:border-color .2s; }
+    .info-cell:hover { border-color:var(--border-hi); }
+    .info-cell-label { font-family:var(--mono); font-size:9px; letter-spacing:.12em; color:var(--text-dim); text-transform:uppercase; margin-bottom:5px; }
+    .info-cell-value { font-family:var(--mono); font-size:13px; color:var(--text-bright); word-break:break-all; }
+    .info-cell-value.accent { color:var(--accent); }
+    .info-cell-value.ok     { color:var(--ok); }
+    .info-cell-value.warn   { color:var(--warn); }
+
+    /* Capacity */
+    .capacity-block { background:var(--surface); border:1px solid var(--border); border-radius:2px; padding:16px 20px; }
+    .capacity-size { font-size:28px; font-weight:700; font-family:var(--mono); color:var(--text-bright); margin-bottom:6px; }
+    .capacity-numbers { display:flex; justify-content:space-between; font-family:var(--mono); font-size:11px; color:var(--text-dim); margin-bottom:8px; }
+    .capacity-bar { height:4px; background:var(--border); border-radius:2px; overflow:hidden; }
+    .capacity-fill { height:100%; background:linear-gradient(90deg,var(--accent-dim),var(--accent)); border-radius:2px; transition:width .8s ease; }
+
+    /* ── Acquisition Panel ── */
+    .acq-panel {
+      background:var(--surface); border:1px solid var(--border); border-radius:2px;
+      padding:20px; display:flex; flex-direction:column; gap:14px;
+    }
+    .acq-filename-row { display:flex; gap:10px; align-items:center; }
+    .acq-input {
+      flex:1; background:var(--bg); border:1px solid var(--border);
+      color:var(--text-bright); font-family:var(--mono); font-size:12px;
+      padding:8px 12px; border-radius:2px; outline:none;
+    }
+    .acq-input:focus { border-color:var(--accent); }
+
+    /* Progress bar */
+    .prog-wrap { display:none; flex-direction:column; gap:8px; }
+    .prog-wrap.visible { display:flex; }
+    .prog-bar-bg { height:6px; background:var(--border); border-radius:3px; overflow:hidden; }
+    .prog-bar-fill {
+      height:100%; width:0%; border-radius:3px;
+      background:linear-gradient(90deg,var(--accent-dim),var(--accent));
+      transition:width .4s ease;
+    }
+    .prog-bar-fill.done   { background:linear-gradient(90deg,#00b04f,var(--ok)); }
+    .prog-bar-fill.error  { background:linear-gradient(90deg,#b00020,var(--danger)); }
+    .prog-bar-fill.cancel { background:linear-gradient(90deg,#7a5800,var(--warn)); }
+
+    .prog-stats {
+      display:grid; grid-template-columns:repeat(4,1fr); gap:8px;
+    }
+    .prog-stat { background:var(--surface2); border:1px solid var(--border); border-radius:2px; padding:8px 12px; }
+    .prog-stat-label { font-family:var(--mono); font-size:9px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.1em; margin-bottom:3px; }
+    .prog-stat-value { font-family:var(--mono); font-size:14px; color:var(--text-bright); }
+
+    .log-box {
+      background:var(--bg); border:1px solid var(--border); border-radius:2px;
+      padding:10px 14px; font-family:var(--mono); font-size:11px; color:var(--text-dim);
+      max-height:120px; overflow-y:auto; line-height:1.7;
+    }
+    .log-line { color:var(--text-dim); }
+    .log-line.ok     { color:var(--ok); }
+    .log-line.warn   { color:var(--warn); }
+    .log-line.danger { color:var(--danger); }
+    .log-line.accent { color:var(--accent); }
+
+    /* Buttons */
+    .action-row { display:flex; gap:10px; flex-wrap:wrap; }
+    .btn {
+      font-family:var(--mono); font-size:11px; letter-spacing:.1em;
+      text-transform:uppercase; padding:9px 18px; border-radius:2px;
+      cursor:pointer; transition:all .15s; border:1px solid transparent;
+    }
+    .btn:disabled { opacity:.4; cursor:not-allowed; }
+    .btn-primary  { background:var(--accent); color:var(--bg); border-color:var(--accent); }
+    .btn-primary:hover:not(:disabled) { background:#33ecff; }
+    .btn-secondary { background:transparent; color:var(--text); border-color:var(--border); }
+    .btn-secondary:hover:not(:disabled) { border-color:var(--border-hi); background:var(--surface2); }
+    .btn-warn  { background:transparent; color:var(--warn); border-color:var(--warn); }
+    .btn-warn:hover:not(:disabled) { background:rgba(255,179,0,.08); }
+    .btn-danger { background:transparent; color:var(--danger); border-color:var(--danger); }
+    .btn-danger:hover:not(:disabled) { background:rgba(255,61,87,.08); }
+
+    /* Geo table */
+    .geo-table { width:100%; border-collapse:collapse; font-family:var(--mono); font-size:12px; }
+    .geo-table tr { border-bottom:1px solid var(--border); }
+    .geo-table td { padding:9px 14px; }
+    .geo-table td:first-child { color:var(--text-dim); font-size:10px; letter-spacing:.1em; text-transform:uppercase; width:220px; }
+    .geo-table td:last-child { color:var(--text-bright); }
+
+    .spinner { display:inline-block; width:14px; height:14px; border:2px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .7s linear infinite; vertical-align:middle; margin-right:6px; }
+
+    /* Footer */
+    footer {
+      border-top:1px solid var(--border); background:var(--surface);
+      padding:8px 32px; display:flex; align-items:center; justify-content:space-between;
+      font-family:var(--mono); font-size:10px; color:var(--text-dim); letter-spacing:.06em;
+    }
+    .footer-right { display:flex; gap:24px; }
+  </style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- Header -->
+  <header>
+    <div class="logo">
+      <div style="width:28px;height:28px;display:grid;place-items:center">
+        <svg viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg" width="28" height="28">
+          <rect x="1" y="7" width="26" height="14" rx="2" stroke="#00e5ff" stroke-width="1.5"/>
+          <rect x="5" y="11" width="4" height="6" rx="1" fill="#00e5ff" opacity=".4"/>
+          <rect x="12" y="11" width="4" height="6" rx="1" fill="#00e5ff" opacity=".4"/>
+          <rect x="19" y="11" width="4" height="6" rx="1" fill="#00e5ff" opacity=".4"/>
+          <rect x="11" y="4" width="6" height="3" rx="1" fill="#00e5ff" opacity=".6"/>
+        </svg>
+      </div>
+      <div>
+        <div class="logo-text">ForensicImager</div>
+        <div class="logo-sub">Drive Acquisition Dashboard v0.2</div>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="status-pill"><div class="dot" id="ws-dot"></div><span id="ws-status">CONNECTING</span></div>
+      <div class="status-pill"><div class="dot" id="api-dot"></div><span id="api-status">CONNECTING</span></div>
+      <div class="status-pill"><span id="sys-time">--:--:--</span></div>
+    </div>
+  </header>
+
+  <main>
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <span class="sidebar-title">Physical Drives</span>
+        <button class="btn-refresh" id="btn-refresh" onclick="loadDrives()">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
+            <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+          </svg>
+          REFRESH
+        </button>
+      </div>
+      <div class="drive-list" id="drive-list">
+        <div class="state-msg"><span class="spinner"></span><br>Querying WMI...</div>
+      </div>
+    </aside>
+
+    <!-- Detail Panel -->
+    <div class="detail-panel" id="detail-panel">
+      <div class="detail-empty" id="detail-empty">
+        <svg width="64" height="64" viewBox="0 0 28 28" fill="none" stroke="#00e5ff" stroke-width="1.5">
+          <rect x="1" y="7" width="26" height="14" rx="2"/>
+          <rect x="5" y="11" width="4" height="6" rx="1" opacity=".5"/>
+          <rect x="12" y="11" width="4" height="6" rx="1" opacity=".5"/>
+          <rect x="19" y="11" width="4" height="6" rx="1" opacity=".5"/>
+          <rect x="11" y="4" width="6" height="3" rx="1" opacity=".7"/>
+        </svg>
+        Select a drive to view details
+      </div>
+      <div id="detail-content" style="display:none"></div>
+    </div>
+  </main>
+
+  <footer>
+    <span>⚠ Run as Administrator for raw drive access &nbsp;|&nbsp; Read-Only Acquisition Mode</span>
+    <div class="footer-right">
+      <span id="drive-count">0 DRIVES</span>
+      <span>BACKEND: 127.0.0.1:5000</span>
+    </div>
+  </footer>
+</div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+let allDrives      = [];
+let activeDriveIdx = null;
+let currentJobId   = null;
+let isAcquiring    = false;
+
+// ── Clock ─────────────────────────────────────────────────────────────────────
+setInterval(() => {
+  document.getElementById('sys-time').textContent = new Date().toTimeString().slice(0,8);
+}, 1000);
+
+// ── SocketIO Setup ────────────────────────────────────────────────────────────
+const socket = io();
+
+function setWsStatus(state) {
+  const dot = document.getElementById('ws-dot');
+  const lbl = document.getElementById('ws-status');
+  dot.className = 'dot ' + state;
+  lbl.textContent = {ok:'WS LIVE', err:'WS DOWN', loading:'WS CONN...'}[state] || state;
+}
+
+socket.on('connect',    () => setWsStatus('ok'));
+socket.on('disconnect', () => setWsStatus('err'));
+socket.on('connect_error', () => setWsStatus('err'));
+
+// ── Job Events ────────────────────────────────────────────────────────────────
+socket.on('job_queued', d => {
+  currentJobId = d.job_id;
+  appendLog(`Job queued: ${d.job_id}`, 'accent');
+  appendLog(`Output: ${d.output_path}`, 'accent');
+  showProgress(true);
+});
+
+socket.on('job_started', d => {
+  appendLog(`▶ Acquisition started on ${d.device_id}`, 'ok');
+});
+
+socket.on('job_progress', d => {
+  updateProgress(d.progress_pct, d.speed_mbs, d.eta_sec, d.bytes_read, d.total_bytes, d.errors);
+});
+
+socket.on('job_complete', d => {
+  isAcquiring   = false;
+  currentJobId  = null;
+  setProgress(100, 'done');
+  appendLog(`✓ Complete in ${d.elapsed_sec}s — avg ${d.avg_speed} MB/s`, 'ok');
+  appendLog(`MD5: ${d.md5}`, 'ok');
+  appendLog(`Saved: ${d.output_path}`, 'ok');
+  appendLog(`Sidecar: ${d.md5_path}`, 'ok');
+  if (d.errors > 0) appendLog(`⚠ ${d.errors} read errors (zero-filled)`, 'warn');
+  updateAcqButtons(false);
+});
+
+socket.on('job_cancelled', d => {
+  isAcquiring  = false;
+  currentJobId = null;
+  setProgress(null, 'cancel');
+  appendLog(`⚠ Acquisition cancelled at ${formatBytes(d.bytes_read)}`, 'warn');
+  updateAcqButtons(false);
+});
+
+socket.on('job_error', d => {
+  isAcquiring  = false;
+  currentJobId = null;
+  setProgress(null, 'error');
+  appendLog(`✗ Error: ${d.message}`, 'danger');
+  if (d.hint) appendLog(`  Hint: ${d.hint}`, 'warn');
+  updateAcqButtons(false);
+});
+
+// ── API Status ────────────────────────────────────────────────────────────────
+function setApiStatus(state) {
+  const dot = document.getElementById('api-dot');
+  const lbl = document.getElementById('api-status');
+  dot.className = 'dot ' + state;
+  lbl.textContent = {ok:'API ONLINE', err:'API OFFLINE', loading:'API ...'}[state] || state;
+}
+
+// ── Load Drives ───────────────────────────────────────────────────────────────
+async function loadDrives() {
+  const btn  = document.getElementById('btn-refresh');
+  const list = document.getElementById('drive-list');
+  btn.classList.add('spinning');
+  setApiStatus('loading');
+  list.innerHTML = '<div class="state-msg"><span class="spinner"></span><br>Querying WMI...</div>';
+  try {
+    const res  = await fetch('/api/drives');
+    const data = await res.json();
+    allDrives  = data.drives;
+    setApiStatus('ok');
+    renderDriveList(allDrives);
+    document.getElementById('drive-count').textContent =
+      `${allDrives.length} DRIVE${allDrives.length !== 1 ? 'S' : ''}`;
+  } catch(e) {
+    setApiStatus('err');
+    list.innerHTML = `<div class="state-msg" style="color:var(--danger)">✗ API unreachable<br><small>${e.message}</small></div>`;
+  } finally {
+    btn.classList.remove('spinning');
+  }
+}
+
+function renderDriveList(drives) {
+  const list = document.getElementById('drive-list');
+  if (!drives.length) { list.innerHTML = '<div class="state-msg">No drives detected.</div>'; return; }
+  list.innerHTML = drives.map(d => `
+    <div class="drive-item ${d.index === activeDriveIdx ? 'active' : ''}" onclick="selectDrive(${d.index})">
+      <div class="drive-item-top">
+        <span class="drive-device">PhysicalDrive${d.index}</span>
+        <span class="drive-size-badge">${d.size_gb} GB</span>
+      </div>
+      <div class="drive-model">${d.model}</div>
+      <div class="drive-interface">${d.interface} · ${d.partitions} partition${d.partitions!==1?'s':''}</div>
+    </div>`).join('');
+}
+
+// ── Select Drive ──────────────────────────────────────────────────────────────
+async function selectDrive(index) {
+  activeDriveIdx = index;
+  renderDriveList(allDrives);
+  const panel = document.getElementById('detail-content');
+  document.getElementById('detail-empty').style.display = 'none';
+  panel.style.display = 'block';
+  panel.innerHTML = '<div style="font-family:var(--mono);font-size:12px;color:var(--text-dim);padding:20px"><span class="spinner"></span> Loading...</div>';
+  try {
+    const res  = await fetch(`/api/drives/${index}`);
+    const data = await res.json();
+    renderDetail(data.drive);
+  } catch(e) {
+    panel.innerHTML = `<div style="color:var(--danger);font-family:var(--mono);font-size:12px;padding:20px">✗ ${e.message}</div>`;
+  }
+}
+
+// ── Render Detail ─────────────────────────────────────────────────────────────
+function renderDetail(d) {
+  const geo    = d.geometry || {};
+  const hasGeo = !geo.error;
+  const pct    = Math.min((d.size_bytes / (20 * 1024**4)) * 100, 100).toFixed(1);
+  const ts     = new Date().toISOString().slice(0,19).replace(/[-:T]/g, match => match === 'T' ? '_' : match);
+  const defName = `PhysicalDrive${d.index}_${ts}`;
+
+  document.getElementById('detail-content').innerHTML = `
+
+    <!-- Capacity -->
+    <div>
+      <div class="section-label">Capacity</div>
+      <div class="capacity-block">
+        <div class="capacity-size">${d.size_gb} GB</div>
+        <div class="capacity-numbers"><span>${formatBytes(d.size_bytes)}</span><span>${pct}% of 20 TB ref.</span></div>
+        <div class="capacity-bar"><div class="capacity-fill" style="width:${pct}%"></div></div>
+      </div>
+    </div>
+
+    <!-- Drive Identity -->
+    <div>
+      <div class="section-label">Drive Identity</div>
+      <div class="info-grid">
+        <div class="info-cell"><div class="info-cell-label">Device Path</div><div class="info-cell-value accent">${d.device_id}</div></div>
+        <div class="info-cell"><div class="info-cell-label">Model</div><div class="info-cell-value">${d.model}</div></div>
+        <div class="info-cell"><div class="info-cell-label">Serial Number</div><div class="info-cell-value">${d.serial}</div></div>
+        <div class="info-cell"><div class="info-cell-label">Firmware</div><div class="info-cell-value">${d.firmware}</div></div>
+        <div class="info-cell"><div class="info-cell-label">Interface</div><div class="info-cell-value">${d.interface}</div></div>
+        <div class="info-cell"><div class="info-cell-label">Media Type</div><div class="info-cell-value">${d.media_type}</div></div>
+        <div class="info-cell"><div class="info-cell-label">Partitions</div><div class="info-cell-value">${d.partitions}</div></div>
+        <div class="info-cell"><div class="info-cell-label">Status</div><div class="info-cell-value ${d.status==='OK'?'ok':'warn'}">${d.status}</div></div>
+      </div>
+    </div>
+
+    <!-- Geometry -->
+    <div>
+      <div class="section-label">Disk Geometry (IOCTL)</div>
+      ${hasGeo ? `
+      <div class="capacity-block">
+        <table class="geo-table">
+          <tr><td>Cylinders</td><td>${geo.cylinders?.toLocaleString()??'—'}</td></tr>
+          <tr><td>Tracks / Cylinder</td><td>${geo.tracks_per_cylinder??'—'}</td></tr>
+          <tr><td>Sectors / Track</td><td>${geo.sectors_per_track??'—'}</td></tr>
+          <tr><td>Bytes / Sector</td><td>${geo.bytes_per_sector??'—'}</td></tr>
+          <tr><td>Total Sectors (calc.)</td><td>${
+            geo.cylinders&&geo.tracks_per_cylinder&&geo.sectors_per_track
+              ? (geo.cylinders*geo.tracks_per_cylinder*geo.sectors_per_track).toLocaleString()
+              : '—'
+          }</td></tr>
+        </table>
+      </div>` : `
+      <div class="state-msg" style="background:var(--surface);border:1px solid var(--border);border-radius:2px;padding:16px;text-align:left">
+        <span style="color:var(--warn)">⚠ IOCTL unavailable:</span> ${geo.error??'Unknown'}<br>
+        <small>Run Flask as Administrator to access raw drive handles.</small>
+      </div>`}
+    </div>
+
+    <!-- ── Acquisition Panel ── -->
+    <div>
+      <div class="section-label">Acquire Image</div>
+      <div class="acq-panel">
+
+        <div class="acq-filename-row">
+          <input class="acq-input" id="acq-filename" type="text"
+                 placeholder="Output filename (e.g. evidence_001)"
+                 value="${defName}"/>
+          <span style="font-family:var(--mono);font-size:11px;color:var(--text-dim)">.dd</span>
+        </div>
+
+        <div class="action-row">
+          <button class="btn btn-primary"  id="btn-acquire" onclick="startAcquisition(${d.index})">▶ Start Acquisition</button>
+          <button class="btn btn-danger"   id="btn-cancel"  onclick="cancelAcquisition()" disabled>◼ Cancel</button>
+          <button class="btn btn-secondary" onclick="notImpl('Verify Hash')">⊞ Verify Hash</button>
+        </div>
+
+        <!-- Progress -->
+        <div class="prog-wrap" id="prog-wrap">
+          <div style="display:flex;justify-content:space-between;font-family:var(--mono);font-size:11px;color:var(--text-dim)">
+            <span id="prog-label">0%</span>
+            <span id="prog-status">Waiting...</span>
+          </div>
+          <div class="prog-bar-bg"><div class="prog-bar-fill" id="prog-bar"></div></div>
+          <div class="prog-stats">
+            <div class="prog-stat"><div class="prog-stat-label">Speed</div><div class="prog-stat-value" id="stat-speed">— MB/s</div></div>
+            <div class="prog-stat"><div class="prog-stat-label">Read</div><div class="prog-stat-value" id="stat-read">—</div></div>
+            <div class="prog-stat"><div class="prog-stat-label">ETA</div><div class="prog-stat-value" id="stat-eta">—</div></div>
+            <div class="prog-stat"><div class="prog-stat-label">Errors</div><div class="prog-stat-value" id="stat-errors">0</div></div>
+          </div>
+        </div>
+
+        <!-- Log -->
+        <div class="log-box" id="log-box">
+          <div class="log-line">[ ForensicImager ready — select a drive and press Start Acquisition ]</div>
+        </div>
+
+      </div>
+    </div>
+  `;
+}
+
+// ── Acquisition Controls ──────────────────────────────────────────────────────
+function startAcquisition(driveIndex) {
+  if (isAcquiring) return;
+  const fname = document.getElementById('acq-filename')?.value?.trim();
+  if (!fname) { appendLog('⚠ Please enter an output filename.', 'warn'); return; }
+  isAcquiring = true;
+  updateAcqButtons(true);
+  appendLog(`Sending acquisition request for PhysicalDrive${driveIndex}...`, 'accent');
+  socket.emit('start_acquisition', { drive_index: driveIndex, output_filename: fname });
+}
+
+function cancelAcquisition() {
+  if (!currentJobId) return;
+  appendLog(`Sending cancel signal to ${currentJobId}...`, 'warn');
+  fetch(`/api/jobs/${currentJobId}/cancel`, { method: 'POST' });
+}
+
+function updateAcqButtons(acquiring) {
+  const btnAcq    = document.getElementById('btn-acquire');
+  const btnCancel = document.getElementById('btn-cancel');
+  if (!btnAcq) return;
+  btnAcq.disabled    = acquiring;
+  btnCancel.disabled = !acquiring;
+}
+
+// ── Progress Helpers ──────────────────────────────────────────────────────────
+function showProgress(visible) {
+  const w = document.getElementById('prog-wrap');
+  if (w) w.classList.toggle('visible', visible);
+}
+
+function updateProgress(pct, speed, eta, bytesRead, total, errors) {
+  setProgress(pct, 'active');
+  const el = id => document.getElementById(id);
+  if(el('stat-speed'))  el('stat-speed').textContent  = `${speed} MB/s`;
+  if(el('stat-read'))   el('stat-read').textContent   = `${formatBytes(bytesRead)} / ${formatBytes(total)}`;
+  if(el('stat-eta'))    el('stat-eta').textContent    = formatETA(eta);
+  if(el('stat-errors')) el('stat-errors').textContent = errors;
+  if(el('prog-status')) el('prog-status').textContent = `${speed} MB/s · ETA ${formatETA(eta)}`;
+}
+
+function setProgress(pct, state) {
+  const bar   = document.getElementById('prog-bar');
+  const label = document.getElementById('prog-label');
+  if (!bar) return;
+  if (pct !== null) bar.style.width = pct + '%';
+  bar.className = 'prog-bar-fill' + (state !== 'active' ? ' ' + state : '');
+  if (label && pct !== null) label.textContent = pct.toFixed(1) + '%';
+  showProgress(true);
+}
+
+// ── Log ───────────────────────────────────────────────────────────────────────
+function appendLog(msg, cls = '') {
+  const box = document.getElementById('log-box');
+  if (!box) return;
+  const line = document.createElement('div');
+  line.className = 'log-line ' + cls;
+  line.textContent = `[${new Date().toTimeString().slice(0,8)}] ${msg}`;
+  box.appendChild(line);
+  box.scrollTop = box.scrollHeight;
+}
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+function formatBytes(b) {
+  if (!b) return '0 B';
+  const u = ['B','KB','MB','GB','TB']; let i = 0;
+  while (b >= 1024 && i < u.length-1) { b /= 1024; i++; }
+  return `${b.toFixed(2)} ${u[i]}`;
+}
+
+function formatETA(sec) {
+  if (!sec || sec <= 0) return '—';
+  const h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60), s = Math.floor(sec%60);
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function notImpl(name) { alert(`[STUB] "${name}" — implement in engine module.`); }
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+loadDrives();
+</script>
+</body>
+</html>

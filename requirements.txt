@@ -1,0 +1,4 @@
+flask>=3.0.0
+flask-socketio>=5.3.6
+pywin32>=306
+wmi>=1.5.1
